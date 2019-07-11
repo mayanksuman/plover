@@ -96,40 +96,30 @@ class MainWindow(QMainWindow, Ui_MainWindow, WindowState):
         )
         for tool_plugin in registry.list_plugins('gui.qt.tool'):
             tool = tool_plugin.obj
-            action_parameters = []
+            menu_action = tools_menu.addAction(tool.TITLE)
+            if tool.SHORTCUT is not None:
+                menu_action.setShortcut(QKeySequence.fromString(tool.SHORTCUT))
             if tool.ICON is not None:
                 icon = tool.ICON
                 # Internal QT resources start with a `:`.
                 if not icon.startswith(':'):
                     icon = resource_filename(icon)
-                action_parameters.append(QIcon(icon))
-            action_parameters.append(tool.TITLE)
-            toolbar_action = None
-            for parent in (tools_menu, self.toolbar, self.toolbar_menu):
-                action = parent.addAction(*action_parameters)
-                action.setObjectName(tool_plugin.name)
-                if tool.__doc__ is not None:
-                    action.setToolTip(tool.__doc__)
-                if tool.SHORTCUT is not None:
-                    action.setShortcut(QKeySequence.fromString(tool.SHORTCUT))
-                if parent == self.toolbar_menu:
-                    action.setCheckable(True)
-                    action.setChecked(True)
-                    assert toolbar_action is not None
-                    action.toggled.connect(toolbar_action.setVisible)
-                else:
-                    if parent == self.toolbar:
-                        toolbar_action = action
-                    action.triggered.connect(partial(self._activate_dialog,
-                                                     tool_plugin.name,
-                                                     args=()))
+                menu_action.setIcon(QIcon(icon))
+            menu_action.triggered.connect(partial(self._activate_dialog, tool_plugin.name, args=()))
+            toolbar_action = self.toolbar.addAction(menu_action.icon(), menu_action.text())
+            if tool.__doc__ is not None:
+                toolbar_action.setToolTip(tool.__doc__)
+            toolbar_action.triggered.connect(menu_action.trigger)
+            toggle_action = self.toolbar_menu.addAction(menu_action.icon(), menu_action.text())
+            toggle_action.setObjectName(tool_plugin.name)
+            toggle_action.setCheckable(True)
+            toggle_action.setChecked(True)
+            toggle_action.toggled.connect(toolbar_action.setVisible)
             self._dialog_class[tool_plugin.name] = tool
         engine.signal_connect('output_changed', self.on_output_changed)
         # Machine.
-        self.machine_type.addItems(
-            _(plugin.name)
-            for plugin in registry.list_plugins('machine')
-        )
+        for plugin in registry.list_plugins('machine'):
+            self.machine_type.addItem(_(plugin.name), plugin.name)
         engine.signal_connect('config_changed', self.on_config_changed)
         engine.signal_connect('machine_state_changed',
             lambda machine, state:
@@ -147,7 +137,7 @@ class MainWindow(QMainWindow, Ui_MainWindow, WindowState):
             self.on_configure()
         # Apply configuration settings.
         config = self._engine.config
-        self.machine_type.setCurrentText(config['machine_type'])
+        self._update_machine(config['machine_type'])
         self._configured = False
         self.dictionaries.on_config_changed(config)
         self.set_visible(not config['start_minimized'])
@@ -202,19 +192,22 @@ class MainWindow(QMainWindow, Ui_MainWindow, WindowState):
         if settings.contains('hidden_toolbar_tools'):
             hidden_toolbar_tools = json.loads(settings.value('hidden_toolbar_tools'))
             for action in self.toolbar_menu.actions():
-                if action.objectName() in hidden_toolbar_tools:
-                    action.setChecked(False)
+                action.setChecked(action.objectName() not in hidden_toolbar_tools)
 
     def _save_state(self, settings):
-        hidden_toolbar_tools = set()
-        for action in self.toolbar_menu.actions():
-            if not action.isChecked():
-                hidden_toolbar_tools.add(action.objectName())
+        hidden_toolbar_tools = {
+            action.objectName()
+            for action in self.toolbar_menu.actions()
+            if not action.isChecked()
+        }
         settings.setValue('hidden_toolbar_tools', json.dumps(list(sorted(hidden_toolbar_tools))))
+
+    def _update_machine(self, machine_type):
+        self.machine_type.setCurrentIndex(self.machine_type.findData(machine_type))
 
     def on_config_changed(self, config_update):
         if 'machine_type' in config_update:
-            self.machine_type.setCurrentText(config_update['machine_type'])
+            self._update_machine(config_update['machine_type'])
         if not self._configured:
             self._configured = True
             if config_update.get('show_suggestions_display', False):
@@ -222,8 +215,8 @@ class MainWindow(QMainWindow, Ui_MainWindow, WindowState):
             if config_update.get('show_stroke_display', False):
                 self._activate_dialog('paper_tape')
 
-    def on_machine_changed(self, machine_type):
-        self._engine.config = { 'machine_type': machine_type }
+    def on_machine_changed(self, machine_index):
+        self._engine.config = { 'machine_type': self.machine_type.itemData(machine_index) }
 
     def on_output_changed(self, enabled):
         self._trayicon.update_output(enabled)
